@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Fit Desk — your styling desk</title>
+    <title>Wardrobe</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
@@ -783,7 +783,7 @@
     <div class="wrap">
 
         <header class="mast">
-            <div class="mark">Fit<span>.</span>Desk</div>
+            <div class="mark">Ward<span>.</span>robe</div>
             <div class="mast-meta">Styling desk<br>Karachi · <span id="today"></span></div>
         </header>
         <div class="tagline">Pin a photo → read your colours → three looks cut to the occasion</div>
@@ -849,12 +849,17 @@
                             placeholder="e.g. modest cuts only, budget-friendly, no bright colours">
                     </div>
 
+                    <div class="field hidden" id="keyField">
+                        <label for="apikey">OpenRouter API key</label>
+                        <input type="password" id="apikey" placeholder="sk-or-v1-…" autocomplete="off">
+                    </div>
+
                     <div class="row">
                         <button class="btn" id="go" disabled>Read my photo</button>
                         <span id="status1" class="status hidden"><span class="dot"></span><span>Reading…</span></span>
                     </div>
-                    <div class="note">Your photo is sent to the AI for this analysis only. Nothing is saved or uploaded
-                        anywhere else.</div>
+                    <div class="note">Your photo is sent to OpenRouter for this analysis only. Nothing is saved or
+                        uploaded anywhere else.</div>
                     <div id="err1"></div>
                 </div>
             </div>
@@ -909,7 +914,14 @@
             <div class="piece">
                 <span class="piece-label">Rail</span>
                 <div class="row">
-                    <input type="text" id="itemName" placeholder="Black oversized tee" style="flex:1;min-width:180px">
+                    <select id="itemType" aria-label="Item type" style="width:auto;min-width:112px">
+                        <option>Top</option>
+                        <option>Bottom</option>
+                        <option>Layer</option>
+                        <option>Shoes</option>
+                        <option>Accessory</option>
+                    </select>
+                    <input type="text" id="itemName" placeholder="Black oversized tee" style="flex:1;min-width:160px">
                     <input type="color" id="itemColor" value="#1a1a1a" aria-label="Item colour"
                         style="width:52px;height:42px;padding:3px;border:1px solid var(--line);background:#fff">
                     <button class="btn btn-ghost btn-sm" id="addItem">Add to rail</button>
@@ -918,9 +930,11 @@
                         own.</span></div>
                 <div class="row">
                     <button class="btn" id="styleMe" disabled>Style me from these</button>
+                    <button class="btn btn-ghost btn-sm" id="clearRail">Clear rail</button>
                     <span id="status3" class="status hidden"><span class="dot"></span><span>Pulling
                             combinations…</span></span>
                 </div>
+                <div class="note" id="saveNote"></div>
                 <div id="err3"></div>
             </div>
             <div class="looks hidden" id="closetLooks" style="margin-top:16px"></div>
@@ -953,11 +967,15 @@
         </section>
 
         <footer>
-            <span>Fit Desk — single file, no build step</span>
+            <span>Wardrobe — single file, no build step</span>
             <span>Advice, not gospel. Wear what you like.</span>
         </footer>
     </div>
 
+    <!-- Optional: config.js sets window.CONFIG = { OPENROUTER_API_KEY: "sk-or-v1-..." }.
+     Keep it gitignored. If it is missing this 404s harmlessly and the app
+     asks for a key in the form instead. -->
+    <script src="config.js"></script>
     <script>
         /* ---------------- state ---------------- */
         const S = {
@@ -973,24 +991,68 @@
         const $ = id => document.getElementById(id);
         $('today').textContent = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase();
 
-        /* ---------------- api ---------------- */
-        async function ask(messages, system, tokens) {
-            const res = await fetch("https://api.anthropic.com/v1/messages", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    model: "claude-sonnet-4-6",
-                    max_tokens: tokens || 1000,
-                    system: system,
-                    messages: messages
-                })
-            });
-            if (!res.ok) throw new Error("The stylist could not be reached (" + res.status + "). Try again in a moment.");
+        /* ---------------- api ----------------
+           Key resolution order:
+             1. window.CONFIG.OPENROUTER_API_KEY   (config.js — keep it gitignored)
+             2. whatever is typed into the key field
+           Models: "openrouter/free" is OpenRouter's free auto-router — it picks a
+           free model that supports what each request needs (vision, JSON output).
+           Swap in a specific ID here if you want consistency, e.g.
+           "google/gemini-3.6-flash". Free tier is roughly 20 req/min, 200/day.   */
+        const CFG = window.CONFIG || {};
+        const VISION_MODEL = 'openrouter/free';
+        const TEXT_MODEL = 'openrouter/free';
+
+        function apiKey() { return (CFG.OPENROUTER_API_KEY || $('apikey').value || '').trim(); }
+        if (!CFG.OPENROUTER_API_KEY) $('keyField').classList.remove('hidden');
+
+        async function ask(messages, system, tokens, opts) {
+            opts = opts || {};
+            const key = apiKey();
+            if (!key) throw new Error('No API key. Paste your OpenRouter key in the brief, or add it to config.js.');
+
+            const body = {
+                model: opts.vision ? VISION_MODEL : TEXT_MODEL,
+                max_tokens: tokens || 1000,
+                temperature: 0.85,
+                messages: [{ role: 'system', content: system }].concat(messages)
+            };
+            if (opts.json) body.response_format = { type: 'json_object' };
+
+            let res;
+            try {
+                res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer " + key,
+                        "X-Title": "Wardrobe"
+                    },
+                    body: JSON.stringify(body)
+                });
+            } catch (e) {
+                throw new Error('Could not reach OpenRouter. Check your connection, then check the key is valid.');
+            }
+            if (res.status === 401) throw new Error('OpenRouter rejected that key. Generate a new one at openrouter.ai/keys.');
+            if (res.status === 402) throw new Error('Out of credits on OpenRouter, or this model is not free. Add credits or switch VISION_MODEL to a :free ID.');
+            if (res.status === 429) throw new Error('Rate limited — the free tier allows about 20 requests a minute. Wait a moment and retry.');
+            if (res.status === 404) throw new Error('Model "' + body.model + '" is not available. Edit VISION_MODEL / TEXT_MODEL near the top of the script.');
+            if (!res.ok) {
+                let detail = '';
+                try { detail = (await res.json()).error.message; } catch (e) { }
+                throw new Error('OpenRouter returned ' + res.status + (detail ? ' — ' + detail : '') + '.');
+            }
             const data = await res.json();
-            return (data.content || []).map(b => b.type === "text" ? b.text : "").join("\n").trim();
+            if (data.error) throw new Error(data.error.message || 'OpenRouter returned an error.');
+            const out = (data.choices && data.choices[0] && data.choices[0].message.content) || '';
+            if (!out.trim()) throw new Error('The model returned nothing — free models drop requests under load. Try again.');
+            return out.trim();
         }
+
         function parseJSON(txt) {
-            const clean = txt.replace(/```json/gi, "").replace(/```/g, "").trim();
+            const clean = txt
+                .replace(/<think>[\s\S]*?<\/think>/gi, "")
+                .replace(/```json/gi, "").replace(/```/g, "").trim();
             const s = clean.indexOf("{"), e = clean.lastIndexOf("}");
             return JSON.parse(s >= 0 ? clean.slice(s, e + 1) : clean);
         }
@@ -1051,7 +1113,7 @@
                 const txt = await ask([{
                     role: "user",
                     content: [
-                        { type: "image", source: { type: "base64", media_type: S.mime, data: S.img } },
+                        { type: "image_url", image_url: { url: "data:" + S.mime + ";base64," + S.img } },
                         {
                             type: "text", text:
                                 `Read this person's colouring for styling purposes. Return ONLY JSON:
@@ -1064,7 +1126,7 @@
 palette = exactly 6 entries. avoid = exactly 3 entries that would wash them out.
 Keep every string short. No text outside the JSON.` }
                     ]
-                }], STYLIST, 1000);
+                }], STYLIST, 1200, { vision: true, json: true });
                 S.profile = parseJSON(txt);
                 renderRead();
                 $('secRead').classList.remove('hidden');
@@ -1106,7 +1168,7 @@ Occasion: ${S.brief.occasion}. Weather: ${S.brief.weather}. Preferred fit: ${S.b
 Extra notes: ${S.brief.notes || 'none'}.
 Return ONLY JSON: {"looks":[{"name":"outfit name, 3 words max","items":[{"piece":"garment type","detail":"colour + fabric + fit, max 8 words","hex":"#RRGGBB"}],"why":"why it works on them, max 18 words","swap":"one alternative piece, max 10 words"}]}
 Exactly 3 looks. Each look has exactly 5 items covering top, bottom, layer or accessory, shoes, and one finishing detail. Keep strings short. No text outside the JSON.` }],
-                    STYLIST, 1000);
+                    STYLIST, 1400, { json: true });
                 S.looks = parseJSON(txt).looks || [];
                 renderLooks(S.looks, 'looks', ['Look A', 'Look B', 'Look C']);
             } catch (err) {
@@ -1127,27 +1189,57 @@ Exactly 3 looks. Each look has exactly 5 items covering top, bottom, layer or ac
         }
         $('redo').addEventListener('click', buildLooks);
 
-        /* ---------------- 3. closet ---------------- */
+        /* ---------------- 3. closet ----------------
+           The rail is saved in this browser only. If storage is blocked (private
+           mode, or an embedded preview), it quietly falls back to session memory. */
+        const RAIL_KEY = 'wardrobe.rail';
+        let railSaves = true;
+
+        function saveRail() {
+            try { localStorage.setItem(RAIL_KEY, JSON.stringify(S.closet)); }
+            catch (e) { railSaves = false; noteSaving(); }
+        }
+        function loadRail() {
+            try {
+                const raw = localStorage.getItem(RAIL_KEY);
+                if (raw) S.closet = JSON.parse(raw) || [];
+            } catch (e) { railSaves = false; }
+            noteSaving(); renderRail();
+        }
+        function noteSaving() {
+            $('saveNote').textContent = railSaves
+                ? 'Your rail is saved in this browser — it will still be here next visit.'
+                : 'Storage is blocked here, so the rail lasts until you close the tab.';
+        }
+
         $('addItem').addEventListener('click', addItem);
         $('itemName').addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
         function addItem() {
             const name = $('itemName').value.trim(); if (!name) return;
-            S.closet.push({ name, hex: $('itemColor').value });
-            $('itemName').value = ''; renderRail();
+            S.closet.push({ name, hex: $('itemColor').value, type: $('itemType').value });
+            $('itemName').value = ''; $('itemName').focus();
+            renderRail(); saveRail();
         }
         function renderRail() {
             if (!S.closet.length) { $('rail').innerHTML = '<span class="empty">Rail is empty — add a few pieces you actually own.</span>'; }
             else {
                 $('rail').innerHTML = S.closet.map((it, i) =>
-                    '<span class="tagit"><i style="background:' + it.hex + '"></i>' + it.name +
-                    '<button data-i="' + i + '" aria-label="Remove ' + it.name + '">×</button></span>').join('');
+                    '<span class="tagit"><i style="background:' + it.hex + '"></i>' +
+                    (it.type ? '<b style="font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--slate);font-weight:400">' + it.type + '</b> ' : '') +
+                    it.name + '<button data-i="' + i + '" aria-label="Remove ' + it.name + '">×</button></span>').join('');
             }
             $('styleMe').disabled = S.closet.length < 3;
+            $('clearRail').classList.toggle('hidden', !S.closet.length);
         }
         $('rail').addEventListener('click', e => {
             const b = e.target.closest('button'); if (!b) return;
-            S.closet.splice(+b.dataset.i, 1); renderRail();
+            S.closet.splice(+b.dataset.i, 1); renderRail(); saveRail();
         });
+        $('clearRail').addEventListener('click', () => {
+            if (!confirm('Remove every piece from the rail?')) return;
+            S.closet = []; renderRail(); saveRail();
+        });
+        loadRail();
 
         $('styleMe').addEventListener('click', async () => {
             clearErr('err3'); busy('status3', true); $('styleMe').disabled = true;
@@ -1155,11 +1247,11 @@ Exactly 3 looks. Each look has exactly 5 items covering top, bottom, layer or ac
                 const p = S.profile || {};
                 const txt = await ask([{
                     role: "user", content:
-                        `Their wardrobe: ${S.closet.map(i => i.name + ' (' + i.hex + ')').join('; ')}.
+                        `Their wardrobe: ${S.closet.map(i => (i.type ? i.type + ' — ' : '') + i.name + ' (' + i.hex + ')').join('; ')}.
 Their colouring: ${p.undertone || 'unknown'}, ${p.contrast || ''}. Occasion: ${S.brief.occasion}. Weather: ${S.brief.weather}.
 Build 2 outfits using ONLY these pieces. Then list 3 items missing from the wardrobe that would unlock the most new outfits.
 Return ONLY JSON: {"looks":[{"name":"3 words max","items":[{"piece":"item name from the list","detail":"how to wear it, max 7 words","hex":"#RRGGBB"}],"why":"max 15 words","swap":""}],"gaps":[{"item":"garment + colour","why":"max 12 words"}]}
-Keep strings short. No text outside the JSON.` }], STYLIST, 1000);
+Keep strings short. No text outside the JSON.` }], STYLIST, 1200, { json: true });
                 const out = parseJSON(txt);
                 renderLooks(out.looks || [], 'closetLooks', ['From your rail', 'From your rail']);
                 $('gapsList').innerHTML = (out.gaps || []).map(g => '<li><strong>' + g.item + '</strong> — ' + g.why + '</li>').join('');
@@ -1180,7 +1272,8 @@ Keep strings short. No text outside the JSON.` }], STYLIST, 1000);
             const typing = addMsg('st', '…');
             try {
                 const ctx = `Context — colouring: ${JSON.stringify(S.profile || {})}. Their looks: ${JSON.stringify(S.looks)}. Wardrobe: ${S.closet.map(i => i.name).join(', ') || 'not listed'}. Answer in under 70 words, plain text, no markdown.`;
-                const reply = await ask(S.thread.slice(-6), STYLIST + ' ' + ctx, 400);
+                let reply = await ask(S.thread.slice(-6), STYLIST + ' ' + ctx, 600);
+                reply = reply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
                 typing.textContent = reply;
                 S.thread.push({ role: 'assistant', content: reply });
             } catch (err) {
@@ -1199,7 +1292,7 @@ Keep strings short. No text outside the JSON.` }], STYLIST, 1000);
         $('dl').addEventListener('click', () => {
             const p = S.profile || {};
             const lines = [
-                'FIT DESK — STYLE REPORT',
+                'WARDROBE — STYLE REPORT',
                 new Date().toLocaleDateString(),
                 '',
                 'COLOURING',
